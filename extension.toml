@@ -1,0 +1,9 @@
+id = "mcp-server-atexplore"
+name = "ATExplore MCP Server"
+version = "0.1.0"
+schema_version = 1
+authors = ["moshyfawn <email@moshyfawn.dev>"]
+description = "MCP server for exploring and interacting with the AT Protocol ecosystem"
+repository = "https://github.com/moshyfawn/zed-mcp-server-atexplore"
+
+[context_servers.mcp-server-atexplore]
