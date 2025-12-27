@@ -1,57 +1,102 @@
-use schemars::JsonSchema;
-use serde::Deserialize;
-use zed::settings::ContextServerSettings;
-use zed_extension_api::{
-    self as zed, serde_json, Command, ContextServerConfiguration, ContextServerId, Project, Result,
-};
+use std::fs;
+use zed_extension_api::{self as zed, Command, ContextServerId, Project, Result};
 
-#[derive(Deserialize, JsonSchema, Default)]
-struct ATExploreSettings {
-    server_url: Option<String>,
+const BINARY_REPO: &str = "moshyfawn/mcp-relay";
+const BINARY_NAME: &str = "mcp-relay";
+const SERVER_URL: &str = "https://mcp.atexplore.social/mcp";
+
+struct Extension {
+    binary_path: Option<String>,
 }
 
-struct ATExploreMcpExtension;
+impl Extension {
+    fn get_binary(&mut self) -> Result<String> {
+        if let Some(ref path) = self.binary_path {
+            return Ok(path.clone());
+        }
 
-impl zed::Extension for ATExploreMcpExtension {
+        let (platform, arch) = zed::current_platform();
+
+        let binary_name = if platform == zed::Os::Windows {
+            "mcp_relay.exe".to_string()
+        } else {
+            "mcp_relay".to_string()
+        };
+
+        let release = zed::latest_github_release(
+            BINARY_REPO,
+            zed::GithubReleaseOptions {
+                require_assets: true,
+                pre_release: false,
+            },
+        )?;
+
+        let asset_name = format!(
+            "{}-{}-{}.tar.gz",
+            BINARY_NAME,
+            match platform {
+                zed::Os::Mac => "darwin",
+                zed::Os::Linux => "linux",
+                zed::Os::Windows => "windows",
+            },
+            match arch {
+                zed::Architecture::Aarch64 => "aarch64",
+                zed::Architecture::X8664 | zed::Architecture::X86 => "x86_64",
+            }
+        );
+
+        let asset = release
+            .assets
+            .iter()
+            .find(|a| a.name == asset_name)
+            .ok_or_else(|| format!("No asset found: {}", asset_name))?;
+
+        let version_dir = format!("{}-{}", BINARY_NAME, release.version);
+        let binary_path = format!("{}/{}", version_dir, binary_name);
+
+        if fs::metadata(&binary_path).is_err() {
+            if let Ok(entries) = fs::read_dir(".") {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    if name.to_string_lossy().starts_with(BINARY_NAME) {
+                        let _ = fs::remove_dir_all(entry.path());
+                    }
+                }
+            }
+
+            zed::download_file(
+                &asset.download_url,
+                &version_dir,
+                zed::DownloadedFileType::GzipTar,
+            )
+            .map_err(|e| format!("Download failed: {}", e))?;
+
+            if platform != zed::Os::Windows {
+                zed::make_file_executable(&binary_path)?;
+            }
+        }
+
+        self.binary_path = Some(binary_path.clone());
+        Ok(binary_path)
+    }
+}
+
+impl zed::Extension for Extension {
     fn new() -> Self {
-        Self
+        Self { binary_path: None }
     }
 
     fn context_server_command(
         &mut self,
-        _context_server_id: &ContextServerId,
-        project: &Project,
+        _id: &ContextServerId,
+        _project: &Project,
     ) -> Result<Command> {
-        if zed::npm_package_installed_version("mcp-remote")?.is_none() {
-            zed::npm_install_package("mcp-remote", "latest")?;
-        }
-
-        let server_url = ContextServerSettings::for_project("mcp-server-atexplore", project)
-            .ok()
-            .and_then(|s| s.settings)
-            .and_then(|v| serde_json::from_value::<ATExploreSettings>(v).ok())
-            .and_then(|s| s.server_url)
-            .unwrap_or_else(|| "https://mcp.atexplore.social/mcp".into());
-
         Ok(Command {
-            command: "node_modules/.bin/mcp-remote".into(),
-            args: vec![server_url],
+            command: self.get_binary()?,
+            args: vec![SERVER_URL.to_string()],
             env: vec![],
         })
     }
-
-    fn context_server_configuration(
-        &mut self,
-        _context_server_id: &ContextServerId,
-        _project: &Project,
-    ) -> Result<Option<ContextServerConfiguration>> {
-        Ok(Some(ContextServerConfiguration {
-            installation_instructions: include_str!("../configuration/installation_instructions.md").into(),
-            default_settings: include_str!("../configuration/default_settings.jsonc").into(),
-            settings_schema: serde_json::to_string(&schemars::schema_for!(ATExploreSettings))
-                .map_err(|e| e.to_string())?,
-        }))
-    }
 }
 
-zed::register_extension!(ATExploreMcpExtension);
+zed::register_extension!(Extension);
